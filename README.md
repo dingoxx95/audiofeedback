@@ -531,7 +531,7 @@ audiofeedback/
 
 ## 📜 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under... nothing, we just want you to be free and happy.
 
 ## 🙏 Acknowledgments
 
