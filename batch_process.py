@@ -28,7 +28,7 @@ except ImportError:
 class BatchAudioProcessor:
     """Batch process multiple audio files"""
     
-    def __init__(self, model_name: str = "gemma2:27b", max_workers: int = 2):
+    def __init__(self, model_name: str = "gemma3:27b", max_workers: int = 2):
         """
         Initialize batch processor
         
@@ -322,7 +322,7 @@ def main():
     parser.add_argument('-v', '--visualize', action='store_true', help='Create visualization charts')
     parser.add_argument('-p', '--parallel', action='store_true', help='Process files in parallel (memory intensive)')
     parser.add_argument('-w', '--workers', type=int, default=2, help='Number of parallel workers (default: 2)')
-    parser.add_argument('-m', '--model', default='gemma2:27b', help='LLM model name (default: gemma2:27b)')
+    parser.add_argument('-m', '--model', default='gemma3:27b', help='LLM model name (default: gemma3:27b)')
     
     args = parser.parse_args()
     

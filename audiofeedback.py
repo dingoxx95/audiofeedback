@@ -38,6 +38,13 @@ except ImportError as e:
     print("Install with: pip install requests ollama")
     sys.exit(1)
 
+# Import configuration
+try:
+    from config_example import Config
+except ImportError:
+    print("Warning: Configuration file not found. Using defaults.")
+    Config = None
+
 
 class AudioAnalyzer:
     """Comprehensive audio analysis class"""
@@ -276,6 +283,82 @@ class AudioAnalyzer:
         
         return harmonic
     
+    def detect_genre(self, analysis: Dict[str, Any]) -> str:
+        """Detect likely genre based on audio characteristics"""
+        if not Config:
+            return "unknown"
+        
+        dynamics = analysis.get('dynamics', {})
+        spectrum = analysis.get('frequency_spectrum', {})
+        temporal = analysis.get('temporal_features', {})
+        stereo = analysis.get('stereo_properties', {})
+        
+        # Extract key parameters
+        dynamic_range = dynamics.get('dynamic_range_db', 0)
+        rms_db = dynamics.get('rms_db', -20)
+        tempo = temporal.get('tempo', 0)
+        stereo_width = stereo.get('stereo_width', 0.5)
+        
+        # Frequency band energies
+        freq_bands = spectrum.get('frequency_bands', {})
+        sub_bass = freq_bands.get('sub_bass_energy', 0)
+        bass = freq_bands.get('bass_energy', 0)
+        brilliance = freq_bands.get('brilliance_energy', 0)
+        
+        # Genre detection logic
+        scores = {}
+        
+        for genre, profile in Config.GENRE_PROFILES.items():
+            score = 0
+            
+            # Dynamic range scoring
+            dr_min, dr_max = profile['expected_dynamic_range']
+            if dr_min <= dynamic_range <= dr_max:
+                score += 3
+            elif abs(dynamic_range - (dr_min + dr_max)/2) < 5:
+                score += 1
+            
+            # RMS level scoring
+            rms_min, rms_max = profile['expected_rms']
+            if rms_min <= rms_db <= rms_max:
+                score += 3
+            elif abs(rms_db - (rms_min + rms_max)/2) < 3:
+                score += 1
+            
+            # Stereo width scoring
+            sw_min, sw_max = profile['stereo_width_target']
+            if sw_min <= stereo_width <= sw_max:
+                score += 2
+            elif abs(stereo_width - (sw_min + sw_max)/2) < 0.3:
+                score += 1
+            
+            # Frequency emphasis scoring
+            freq_emphasis = profile.get('frequency_emphasis', [])
+            if 'sub_bass' in freq_emphasis and sub_bass > 0.3:
+                score += 1
+            if 'bass' in freq_emphasis and bass > 0.4:
+                score += 1
+            if 'brilliance' in freq_emphasis and brilliance > 0.2:
+                score += 1
+            
+            # Tempo-based scoring for specific genres
+            if genre == 'drum_and_bass' and 160 <= tempo <= 180:
+                score += 2
+            elif genre == 'metal' and 100 <= tempo <= 160:
+                score += 1
+            elif genre == 'classical' and 60 <= tempo <= 120:
+                score += 1
+            
+            scores[genre] = score
+        
+        # Return the genre with highest score
+        if scores:
+            detected_genre = max(scores.items(), key=lambda x: x[1])
+            if detected_genre[1] >= 3:  # Minimum confidence threshold
+                return detected_genre[0]
+        
+        return 'unknown'
+
     def get_complete_analysis(self) -> Dict[str, Any]:
         """Perform complete audio analysis"""
         if self.audio_data is None:
@@ -295,6 +378,18 @@ class AudioAnalyzer:
             'stereo_properties': self.analyze_stereo_properties(),
             'harmonic_content': self.analyze_harmonic_content()
         }
+        
+        # Add genre detection
+        detected_genre = self.detect_genre(analysis)
+        analysis['genre_detection'] = {
+            'detected_genre': detected_genre,
+            'confidence': 'high' if detected_genre != 'unknown' else 'low'
+        }
+        
+        # Add genre-specific recommendations if genre is detected
+        if Config and detected_genre != 'unknown':
+            genre_profile = Config.get_genre_config(detected_genre)
+            analysis['genre_profile'] = genre_profile
         
         return analysis
 
@@ -332,11 +427,35 @@ class LLMFeedbackGenerator:
             print("💡 Assicurati che Ollama sia in esecuzione con: ollama serve")
             return False
     
-    def create_analysis_prompt(self, analysis_data: Dict[str, Any]) -> str:
+    def create_analysis_prompt(self, analysis_data: Dict[str, Any], genre: str = None) -> str:
         """Create detailed prompt for LLM analysis"""
+        
+        # Extract genre information
+        detected_genre = analysis_data.get('genre_detection', {}).get('detected_genre', 'unknown')
+        genre_profile = analysis_data.get('genre_profile', {})
+        
+        # Use provided genre or detected genre
+        target_genre = genre or detected_genre
+        
+        # Build genre-specific context
+        genre_context = ""
+        if target_genre != 'unknown' and Config:
+            profile = Config.get_genre_config(target_genre)
+            genre_context = f"""
+GENRE CONTEXT:
+Detected/Target Genre: {target_genre.replace('_', ' ').title()}
+Expected Dynamic Range: {profile['expected_dynamic_range'][0]}-{profile['expected_dynamic_range'][1]} dB
+Expected RMS Level: {profile['expected_rms'][0]} to {profile['expected_rms'][1]} dB
+Key Frequency Bands: {', '.join(profile['frequency_emphasis'])}
+Target Stereo Width: {profile['stereo_width_target'][0]}-{profile['stereo_width_target'][1]}
+
+When analyzing, consider these genre-specific expectations and compare the audio against typical {target_genre.replace('_', ' ')} productions.
+"""
         
         prompt = f"""You are a professional audio engineer and mastering specialist with 20+ years of experience. 
 Analyze the following technical audio data and provide comprehensive feedback as if you were reviewing a mix/master for a client.
+
+{genre_context}
 
 AUDIO ANALYSIS DATA:
 {json.dumps(analysis_data, indent=2)}
@@ -346,19 +465,24 @@ Please provide feedback in the following structure:
 ## OVERALL ASSESSMENT
 Rate the overall technical quality (1-10) and provide a brief summary.
 
+## GENRE ANALYSIS
+{f"Based on the detected genre ({target_genre.replace('_', ' ').title()}), assess how well this track fits the typical characteristics of this style." if target_genre != 'unknown' else "Analyze what genre this track most closely resembles and whether it meets those genre conventions."}
+
 ## DYNAMICS ANALYSIS
 - Comment on the dynamic range, crest factor, and loudness levels
 - Assess if the track is over-compressed or has good dynamics
-- Compare RMS and peak levels to professional standards
+- Compare RMS and peak levels to professional standards{f" and {target_genre.replace('_', ' ')} genre expectations" if target_genre != 'unknown' else ""}
 
 ## FREQUENCY BALANCE
 - Analyze the frequency distribution across all bands
 - Identify any problematic frequency buildups or deficiencies
 - Comment on spectral balance and tonal characteristics
+{f"- Compare against typical {target_genre.replace('_', ' ')} frequency emphasis: {', '.join(genre_profile.get('frequency_emphasis', []))}" if genre_profile else ""}
 
 ## STEREO IMAGING & SPATIAL CHARACTERISTICS
 - Evaluate stereo width, correlation, and left-right balance
 - Comment on the spatial presentation and imaging
+{f"- Assess against {target_genre.replace('_', ' ')} stereo width expectations ({genre_profile.get('stereo_width_target', [0, 1])[0]}-{genre_profile.get('stereo_width_target', [0, 1])[1]})" if genre_profile else ""}
 
 ## TEMPORAL CHARACTERISTICS
 - Assess tempo stability, transient handling, and rhythmic elements
@@ -370,25 +494,26 @@ Provide specific, actionable recommendations for improvement:
 - Dynamic processing recommendations
 - Stereo imaging improvements
 - Any other technical corrections needed
+{f"- Genre-specific recommendations for {target_genre.replace('_', ' ')} productions" if target_genre != 'unknown' else ""}
 
 ## GENRE & REFERENCE CONTEXT
-Based on the analysis, what genre does this appear to be, and how does it compare to professional references in that style?
+{f"How does this track compare to professional {target_genre.replace('_', ' ')} references? What could be improved to better fit the genre?" if target_genre != 'unknown' else "Based on the analysis, what genre does this appear to be, and how does it compare to professional references in that style?"}
 
 ## PRIORITY FIXES
-List the top 3 most important issues to address first.
+List the top 3 most important issues to address first{f", considering {target_genre.replace('_', ' ')} production standards" if target_genre != 'unknown' else ""}.
 
 Be specific with frequencies (Hz), dB values, and technical terminology. Assume the client has intermediate technical knowledge."""
 
         return prompt
     
-    def generate_feedback(self, analysis_data: Dict[str, Any]) -> str:
+    def generate_feedback(self, analysis_data: Dict[str, Any], genre: str = None) -> str:
         """Generate comprehensive feedback using the LLM"""
         if not self.test_connection():
             return "Error: Cannot connect to Ollama or model not available."
         
-        prompt = self.create_analysis_prompt(analysis_data)
+        prompt = self.create_analysis_prompt(analysis_data, genre)
         
-        print(prompt)
+        print(f"🎯 Generating feedback for detected genre: {analysis_data.get('genre_detection', {}).get('detected_genre', 'unknown')}")
         
         try:
             response = self.client.chat(
@@ -422,21 +547,24 @@ class AudioFeedbackApp:
         self.analyzer = AudioAnalyzer()
         self.llm_generator = LLMFeedbackGenerator()
         
-    def process_audio_file(self, file_path: str, output_dir: Optional[str] = None) -> Dict[str, Any]:
+    def process_audio_file(self, file_path: str, output_dir: Optional[str] = None, genre: str = None) -> Dict[str, Any]:
         """Process audio file and generate complete analysis and feedback"""
         
-        print(f"Loading audio file: {file_path}")
+        print(f"🎵 Loading audio file: {file_path}")
         if not self.analyzer.load_audio(file_path):
             return {"error": "Failed to load audio file"}
         
-        print("Performing audio analysis...")
+        print("🔬 Performing audio analysis...")
         try:
             analysis = self.analyzer.get_complete_analysis()
         except Exception as e:
             return {"error": f"Analysis failed: {e}"}
         
-        print("Generating LLM feedback...")
-        feedback = self.llm_generator.generate_feedback(analysis)
+        detected_genre = analysis.get('genre_detection', {}).get('detected_genre', 'unknown')
+        print(f"🎯 Detected genre: {detected_genre.replace('_', ' ').title() if detected_genre != 'unknown' else 'Unknown'}")
+        
+        print("🤖 Generating LLM feedback...")
+        feedback = self.llm_generator.generate_feedback(analysis, genre)
         
         # Combine results
         result = {
@@ -454,16 +582,16 @@ class AudioFeedbackApp:
             # Save analysis JSON
             analysis_file = output_path / f"{Path(file_path).stem}_analysis.json"
             with open(analysis_file, 'w') as f:
-                json.dump(analysis, f, indent=2)
+                json.dump(result["analysis"], f, indent=2)
             
             # Save feedback text
             feedback_file = output_path / f"{Path(file_path).stem}_feedback.md"
             with open(feedback_file, 'w') as f:
-                f.write(f"# Audio Feedback Report\n\n")
-                f.write(f"**File:** {file_path}\n\n")
+                f.write(f"# Audio Analysis Feedback - {Path(file_path).name}\n\n")
+                f.write(f"**Detected Genre:** {detected_genre.replace('_', ' ').title()}\n\n")
                 f.write(feedback)
             
-            print(f"Results saved to: {output_path}")
+            print(f"📁 Results saved to: {output_path}")
         
         return result
     
@@ -538,7 +666,9 @@ def main():
     parser.add_argument('input_file', help='Input audio file (WAV or MP3)')
     parser.add_argument('-o', '--output', help='Output directory for results')
     parser.add_argument('-v', '--visualize', action='store_true', help='Create visualization')
-    parser.add_argument('-m', '--model', default='gemma2:27b', help='LLM model name (default: gemma2:27b)')
+    parser.add_argument('-m', '--model', default='gemma3:27b', help='LLM model name (default: gemma3:27b)')
+    parser.add_argument('-g', '--genre', help='Force specific genre (rock, metal, electronic, drum_and_bass, classical, jazz, podcast)', 
+                        choices=['rock', 'metal', 'electronic', 'drum_and_bass', 'classical', 'jazz', 'podcast'])
     
     args = parser.parse_args()
     
@@ -556,7 +686,7 @@ def main():
     app.llm_generator.model_name = args.model
     
     # Process file
-    result = app.process_audio_file(str(input_file), args.output)
+    result = app.process_audio_file(str(input_file), args.output, args.genre)
     
     if "error" in result:
         print(f"Error: {result['error']}")
