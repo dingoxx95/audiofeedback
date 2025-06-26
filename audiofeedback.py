@@ -302,22 +302,34 @@ class AudioAnalyzer:
 class LLMFeedbackGenerator:
     """Generate professional audio feedback using Ollama/Gemma"""
     
-    def __init__(self, model_name: str = "gemma2:27b"):
+    def __init__(self, model_name: str = "gemma3:27b"):
         self.model_name = model_name
         self.client = ollama.Client()
         
     def test_connection(self) -> bool:
-        """Test if Ollama is running and model is available"""
+        """Testa se Ollama è attivo e il modello è disponibile"""
         try:
             models = self.client.list()
-            model_names = [model['name'] for model in models['models']]
+            # FIX: usa .model invece di ['name']
+            model_names = [model.model for model in models.models]
+            print(f"🤖 Modelli disponibili: {model_names}")
+            
             if self.model_name not in model_names:
-                print(f"Model {self.model_name} not found. Available models: {model_names}")
+                print(f"❌ Modello {self.model_name} non trovato.")
+                print(f"💡 Modelli disponibili: {model_names}")
+                # Usa il primo modello disponibile se quello richiesto non c'è
+                if model_names:
+                    self.model_name = model_names[0]
+                    print(f"🔄 Usando invece: {self.model_name}")
+                    return True
                 return False
+            
+            print(f"✅ Modello {self.model_name} trovato e pronto!")
             return True
+            
         except Exception as e:
-            print(f"Cannot connect to Ollama: {e}")
-            print("Make sure Ollama is running with: ollama serve")
+            print(f"❌ Impossibile connettersi a Ollama: {e}")
+            print("💡 Assicurati che Ollama sia in esecuzione con: ollama serve")
             return False
     
     def create_analysis_prompt(self, analysis_data: Dict[str, Any]) -> str:
@@ -375,6 +387,8 @@ Be specific with frequencies (Hz), dB values, and technical terminology. Assume 
             return "Error: Cannot connect to Ollama or model not available."
         
         prompt = self.create_analysis_prompt(analysis_data)
+        
+        print(prompt)
         
         try:
             response = self.client.chat(
