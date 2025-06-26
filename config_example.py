@@ -11,7 +11,7 @@ class Config:
     """Configuration class for audio analysis"""
     
     # Audio Analysis Settings
-    AUDIO_SAMPLE_RATE = 22050  # Hz - Lower = faster processing, higher = more accuracy
+    AUDIO_SAMPLE_RATE = 44100  # Hz - CD quality standard, good balance between quality and performance
     SUPPORTED_FORMATS = {'.wav', '.mp3', '.flac', '.m4a', '.aac', '.ogg'}
     
     # Analysis Parameters
@@ -27,8 +27,9 @@ class Config:
     }
     
     # LLM Settings
-    DEFAULT_MODEL = "gemma2:27b"
+    DEFAULT_MODEL = "gemma3:27b"
     ALTERNATIVE_MODELS = [
+        "gemma2:27b",    # Previous version
         "gemma2:9b",     # Faster, less detailed
         "llama2:13b",    # Alternative architecture
         "mistral:7b",    # Even faster option
@@ -155,11 +156,23 @@ Analyze this audio data for compliance with broadcast specifications and loudnes
             'frequency_emphasis': ['low_mids', 'presence'],
             'stereo_width_target': (0.6, 1.2)
         },
+        'metal': {
+            'expected_dynamic_range': (6, 12),
+            'expected_rms': (-10, -6),
+            'frequency_emphasis': ['bass', 'low_mids', 'presence', 'brilliance'],
+            'stereo_width_target': (0.8, 1.4)
+        },
         'electronic': {
             'expected_dynamic_range': (6, 12),
             'expected_rms': (-10, -6),
             'frequency_emphasis': ['sub_bass', 'brilliance'],
             'stereo_width_target': (0.8, 1.5)
+        },
+        'drum_and_bass': {
+            'expected_dynamic_range': (8, 14),
+            'expected_rms': (-8, -4),
+            'frequency_emphasis': ['sub_bass', 'bass', 'brilliance'],
+            'stereo_width_target': (1.0, 1.6)
         },
         'classical': {
             'expected_dynamic_range': (15, 25),
@@ -231,6 +244,12 @@ Analyze this audio data for compliance with broadcast specifications and loudnes
     def get_model_config(cls, model_name: str) -> dict:
         """Get optimal configuration for specific model"""
         model_configs = {
+            'gemma3:27b': {
+                'temperature': 0.3,
+                'top_p': 0.9,
+                'max_tokens': 4096,
+                'context_window': 8192
+            },
             'gemma2:27b': {
                 'temperature': 0.3,
                 'top_p': 0.9,
@@ -256,7 +275,7 @@ Analyze this audio data for compliance with broadcast specifications and loudnes
                 'context_window': 8192
             }
         }
-        return model_configs.get(model_name, model_configs['gemma2:27b'])
+        return model_configs.get(model_name, model_configs['gemma3:27b'])
     
     @classmethod
     def get_genre_config(cls, genre: str) -> dict:
@@ -281,7 +300,7 @@ Analyze this audio data for compliance with broadcast specifications and loudnes
         
         # Check model availability
         try:
-            import ollama
+            import ollama #type: ignore
             client = ollama.Client()
             available_models = [m['name'] for m in client.list()['models']]
             if cls.DEFAULT_MODEL not in available_models:
