@@ -23,7 +23,7 @@ try:
     import scipy.signal
     from pydub import AudioSegment
     import matplotlib.pyplot as plt
-    import seaborn as sns
+    import seaborn as sns #type: ignore
 except ImportError as e:
     print(f"Missing required audio libraries: {e}")
     print("Install with: pip install librosa pydub matplotlib seaborn scipy numpy")
@@ -32,7 +32,7 @@ except ImportError as e:
 # LLM integration
 try:
     import requests
-    import ollama
+    import ollama #type: ignore
 except ImportError as e:
     print(f"Missing LLM libraries: {e}")
     print("Install with: pip install requests ollama")
