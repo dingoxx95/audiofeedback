@@ -4,3 +4,4 @@ run_analyzer.bat
 run_batch_process.bat
 activate_env.bat
 /test_audio
+/analysis_*

@@ -2,6 +2,8 @@
 """
 Batch Audio Processing Script
 Process multiple audio files in a directory and generate comprehensive reports.
+
+This script has been updated to use the new modular audiofeedback_core package.
 """
 
 import os
@@ -13,32 +15,43 @@ from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
-# Import our main analyzer (assuming it's in the same directory)
+# Import the modular core package
 try:
-    from audiofeedback import AudioFeedbackApp
-except ImportError:
-    # If running as standalone script
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("audiofeedback", "audiofeedback.py")
-    audiofeedback_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(audiofeedback_module)
-    AudioFeedbackApp = audiofeedback_module.AudioFeedbackApp
+    from audiofeedback_core import AudioFeedbackApp, Config
+except ImportError as e:
+    print(f"Error importing audiofeedback_core: {e}")
+    print("Make sure the audiofeedback_core package is properly installed.")
+    sys.exit(1)
 
 
 class BatchAudioProcessor:
-    """Batch process multiple audio files"""
+    """Batch process multiple audio files using the new modular architecture"""
     
-    def __init__(self, model_name: str = "gemma3:27b", max_workers: int = 2):
+    def __init__(self, model_name: str = "gemma3:27b", max_workers: int = 2, 
+                 enable_llm: bool = True, enable_visualizations: bool = True):
         """
         Initialize batch processor
         
         Args:
             model_name: LLM model to use
             max_workers: Maximum parallel processes (be careful with memory usage)
+            enable_llm: Whether to enable LLM feedback generation
+            enable_visualizations: Whether to enable visualization generation
         """
         self.model_name = model_name
         self.max_workers = max_workers
+        self.enable_llm = enable_llm
+        self.enable_visualizations = enable_visualizations
         self.supported_formats = {'.wav', '.mp3', '.flac', '.m4a', '.aac', '.ogg'}
+        
+        # Initialize configuration
+        try:
+            self.config = Config()
+            if model_name:
+                self.config.DEFAULT_MODEL = model_name
+        except Exception as e:
+            print(f"Warning: Could not load configuration: {e}")
+            self.config = None
         
     def find_audio_files(self, directory: str, recursive: bool = True) -> List[Path]:
         """Find all audio files in directory"""
@@ -56,32 +69,39 @@ class BatchAudioProcessor:
         
         return sorted(audio_files)
     
-    def process_single_file(self, file_path: Path, output_dir: Path, create_viz: bool = False) -> Dict[str, Any]:
-        """Process a single audio file"""
+    def process_single_file(self, file_path: Path, output_dir: Path, genre: str = None) -> Dict[str, Any]:
+        """Process a single audio file using the new modular architecture"""
         try:
             print(f"Processing: {file_path.name}")
+            start_time = time.time()
             
             # Create subdirectory for this file
             file_output_dir = output_dir / file_path.stem
             file_output_dir.mkdir(parents=True, exist_ok=True)
             
-            # Initialize analyzer for this thread
-            app = AudioFeedbackApp()
-            app.llm_generator.model_name = self.model_name
+            # Initialize analyzer for this thread with current settings
+            app = AudioFeedbackApp(
+                config=self.config,
+                enable_llm=self.enable_llm,
+                enable_visualizations=self.enable_visualizations
+            )
             
             # Process file
-            result = app.process_audio_file(str(file_path), str(file_output_dir))
-            
-            # Create visualization if requested
-            if create_viz and "analysis" in result:
-                viz_path = file_output_dir / f"{file_path.stem}_visualization.png"
-                app.create_visualization(result["analysis"], str(viz_path))
+            result = app.analyze_file(
+                str(file_path), 
+                genre=genre,
+                output_dir=str(file_output_dir)
+            )
             
             # Add processing metadata
             result["processing_info"] = {
                 "file_size_mb": file_path.stat().st_size / (1024 * 1024),
-                "model_used": self.model_name,
-                "processing_time": time.time()  # Will be updated by caller
+                "model_used": self.model_name if self.enable_llm else "N/A",
+                "processing_time": time.time() - start_time,
+                "features_enabled": {
+                    "llm_feedback": self.enable_llm,
+                    "visualizations": self.enable_visualizations
+                }
             }
             
             return {
@@ -94,15 +114,16 @@ class BatchAudioProcessor:
             return {
                 "file_path": str(file_path),
                 "status": "error",
-                "error": str(e)
+                "error": str(e),
+                "processing_time": time.time() - start_time if 'start_time' in locals() else 0
             }
     
     def process_batch(self, 
                      input_dir: str, 
                      output_dir: str, 
                      recursive: bool = True,
-                     create_visualizations: bool = False,
-                     parallel: bool = False) -> Dict[str, Any]:
+                     parallel: bool = False,
+                     genre: str = None) -> Dict[str, Any]:
         """
         Process all audio files in a directory
         
@@ -110,8 +131,8 @@ class BatchAudioProcessor:
             input_dir: Directory containing audio files
             output_dir: Directory to save results
             recursive: Search subdirectories
-            create_visualizations: Create visualization charts
             parallel: Process files in parallel (use with caution - memory intensive)
+            genre: Force specific genre for all files
         """
         
         input_path = Path(input_dir)
@@ -128,252 +149,269 @@ class BatchAudioProcessor:
             return {"processed": 0, "errors": 0, "results": []}
         
         print(f"Found {len(audio_files)} audio files to process")
+        print(f"LLM enabled: {self.enable_llm}")
+        print(f"Visualizations enabled: {self.enable_visualizations}")
+        print(f"Parallel processing: {parallel}")
+        if genre:
+            print(f"Genre forced to: {genre}")
         
         # Create output directory
         output_path.mkdir(parents=True, exist_ok=True)
         
         # Process files
         results = []
-        errors = []
+        successful = 0
+        errors = 0
         start_time = time.time()
         
-        if parallel and len(audio_files) > 1:
+        if parallel and self.max_workers > 1:
             # Parallel processing
-            print(f"Processing {len(audio_files)} files in parallel (max {self.max_workers} workers)")
+            print(f"Processing with {self.max_workers} workers...")
             
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # Submit all tasks
+                # Submit all jobs
                 future_to_file = {
-                    executor.submit(self.process_single_file, file_path, output_path, create_visualizations): file_path
+                    executor.submit(self.process_single_file, file_path, output_path, genre): file_path
                     for file_path in audio_files
                 }
                 
-                # Collect results
+                # Collect results as they complete
                 for future in as_completed(future_to_file):
                     file_path = future_to_file[future]
                     try:
                         result = future.result()
+                        results.append(result)
+                        
                         if result["status"] == "success":
-                            results.append(result)
+                            successful += 1
+                            print(f"✓ Completed: {file_path.name}")
                         else:
-                            errors.append(result)
-                    except Exception as e:
-                        errors.append({
+                            errors += 1
+                            print(f"✗ Failed: {file_path.name} - {result['error']}")
+                            
+                    except Exception as exc:
+                        errors += 1
+                        print(f"✗ Exception processing {file_path.name}: {exc}")
+                        results.append({
                             "file_path": str(file_path),
                             "status": "error",
-                            "error": f"Parallel processing error: {e}"
+                            "error": str(exc)
                         })
         else:
             # Sequential processing
-            print(f"Processing {len(audio_files)} files sequentially")
+            print("Processing files sequentially...")
             
             for i, file_path in enumerate(audio_files, 1):
-                print(f"[{i}/{len(audio_files)}] Processing: {file_path.name}")
+                print(f"\nProgress: {i}/{len(audio_files)}")
                 
-                file_start_time = time.time()
-                result = self.process_single_file(file_path, output_path, create_visualizations)
-                file_end_time = time.time()
+                result = self.process_single_file(file_path, output_path, genre)
+                results.append(result)
                 
-                # Update processing time
                 if result["status"] == "success":
-                    result["result"]["processing_info"]["processing_time"] = file_end_time - file_start_time
-                    results.append(result)
+                    successful += 1
+                    print(f"✓ Completed: {file_path.name}")
                 else:
-                    errors.append(result)
-                
-                # Print progress
-                elapsed = file_end_time - file_start_time
-                print(f"  Completed in {elapsed:.1f}s")
+                    errors += 1
+                    print(f"✗ Failed: {file_path.name} - {result['error']}")
         
+        # Calculate summary statistics
         total_time = time.time() - start_time
+        avg_time = total_time / len(audio_files) if audio_files else 0
         
-        # Create summary report
-        summary = {
-            "batch_info": {
-                "input_directory": str(input_path),
-                "output_directory": str(output_path),
-                "total_files_found": len(audio_files),
-                "successfully_processed": len(results),
-                "errors": len(errors),
-                "total_processing_time": total_time,
-                "model_used": self.model_name,
-                "parallel_processing": parallel,
-                "created_visualizations": create_visualizations
+        # Create batch summary
+        batch_summary = {
+            "input_directory": str(input_path),
+            "output_directory": str(output_path),
+            "total_files": len(audio_files),
+            "processed": successful,
+            "errors": errors,
+            "processing_time": total_time,
+            "average_time_per_file": avg_time,
+            "parallel_processing": parallel,
+            "max_workers": self.max_workers if parallel else 1,
+            "features_enabled": {
+                "llm_feedback": self.enable_llm,
+                "visualizations": self.enable_visualizations
             },
-            "successful_results": results,
-            "errors": errors
+            "model_used": self.model_name if self.enable_llm else "N/A",
+            "forced_genre": genre
         }
         
-        # Save summary report
-        summary_file = output_path / "batch_summary.json"
-        with open(summary_file, 'w') as f:
-            json.dump(summary, f, indent=2, default=str)
+        # Generate detailed report
+        report = {
+            "batch_summary": batch_summary,
+            "individual_results": results
+        }
         
-        # Create markdown summary
-        self.create_markdown_summary(summary, output_path / "batch_summary.md")
+        # Save batch report
+        report_file = output_path / "batch_report.json"
+        with open(report_file, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2, default=str)
         
-        print(f"\nBatch processing complete!")
-        print(f"Processed: {len(results)}/{len(audio_files)} files")
-        print(f"Errors: {len(errors)}")
-        print(f"Total time: {total_time:.1f}s")
-        print(f"Average time per file: {total_time/len(audio_files):.1f}s")
-        print(f"Results saved to: {output_path}")
+        # Create summary text file
+        summary_file = output_path / "batch_summary.txt"
+        self.create_text_summary(batch_summary, results, summary_file)
         
-        return summary
+        # Print final summary
+        print(f"\n{'='*60}")
+        print("BATCH PROCESSING COMPLETE")
+        print(f"{'='*60}")
+        print(f"Total files: {len(audio_files)}")
+        print(f"Successfully processed: {successful}")
+        print(f"Errors: {errors}")
+        print(f"Total time: {total_time:.1f} seconds")
+        print(f"Average per file: {avg_time:.1f} seconds")
+        print(f"Report saved to: {report_file}")
+        print(f"Summary saved to: {summary_file}")
+        
+        return report
     
-    def create_markdown_summary(self, summary: Dict[str, Any], output_file: Path):
-        """Create a markdown summary report"""
+    def create_text_summary(self, batch_summary: Dict[str, Any], results: List[Dict[str, Any]], 
+                           output_file: Path) -> None:
+        """Create a human-readable text summary of the batch processing"""
         
-        with open(output_file, 'w') as f:
-            f.write("# Batch Audio Analysis Summary\n\n")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write("BATCH AUDIO ANALYSIS SUMMARY\n")
+            f.write("="*60 + "\n\n")
             
-            # Overview
-            batch_info = summary["batch_info"]
-            f.write("## Overview\n\n")
-            f.write(f"- **Input Directory**: {batch_info['input_directory']}\n")
-            f.write(f"- **Output Directory**: {batch_info['output_directory']}\n")
-            f.write(f"- **Total Files**: {batch_info['total_files_found']}\n")
-            f.write(f"- **Successfully Processed**: {batch_info['successfully_processed']}\n")
-            f.write(f"- **Errors**: {batch_info['errors']}\n")
-            f.write(f"- **Total Processing Time**: {batch_info['total_processing_time']:.1f} seconds\n")
-            f.write(f"- **Model Used**: {batch_info['model_used']}\n")
-            f.write(f"- **Parallel Processing**: {'Yes' if batch_info['parallel_processing'] else 'No'}\n\n")
+            # Batch info
+            f.write("BATCH INFORMATION:\n")
+            f.write(f"Input Directory: {batch_summary['input_directory']}\n")
+            f.write(f"Output Directory: {batch_summary['output_directory']}\n")
+            f.write(f"Total Files: {batch_summary['total_files']}\n")
+            f.write(f"Successfully Processed: {batch_summary['processed']}\n")
+            f.write(f"Errors: {batch_summary['errors']}\n")
+            f.write(f"Processing Time: {batch_summary['processing_time']:.1f} seconds\n")
+            f.write(f"Average Time per File: {batch_summary['average_time_per_file']:.1f} seconds\n")
+            f.write(f"LLM Model Used: {batch_summary['model_used']}\n")
+            f.write(f"Parallel Processing: {'Yes' if batch_summary['parallel_processing'] else 'No'}\n")
             
-            # Successful results
-            if summary["successful_results"]:
-                f.write("## Successfully Processed Files\n\n")
-                for result in summary["successful_results"]:
-                    file_path = Path(result["file_path"])
-                    f.write(f"### {file_path.name}\n\n")
+            if batch_summary.get('forced_genre'):
+                f.write(f"Forced Genre: {batch_summary['forced_genre']}\n")
+            
+            f.write("\nFEATURES ENABLED:\n")
+            features = batch_summary['features_enabled']
+            f.write(f"LLM Feedback: {'Yes' if features['llm_feedback'] else 'No'}\n")
+            f.write(f"Visualizations: {'Yes' if features['visualizations'] else 'No'}\n")
+            
+            # Successful files
+            successful_results = [r for r in results if r['status'] == 'success']
+            if successful_results:
+                f.write(f"\nSUCCESSFULLY PROCESSED FILES ({len(successful_results)}):\n")
+                f.write("-" * 40 + "\n")
+                
+                for result in successful_results:
+                    file_name = Path(result['file_path']).name
+                    file_result = result['result']
+                    summary = file_result.get('summary', {})
                     
-                    if "result" in result and "analysis" in result["result"]:
-                        analysis = result["result"]["analysis"]
-                        f.write(f"- **Duration**: {analysis['file_info']['duration_seconds']:.1f}s\n")
-                        f.write(f"- **Sample Rate**: {analysis['file_info']['sample_rate']} Hz\n")
-                        f.write(f"- **Channels**: {analysis['file_info']['channels']}\n")
-                        f.write(f"- **RMS Level**: {analysis['dynamics']['rms_db']:.1f} dB\n")
-                        f.write(f"- **Peak Level**: {analysis['dynamics']['peak_db']:.1f} dB\n")
-                        f.write(f"- **Dynamic Range**: {analysis['dynamics']['dynamic_range_db']:.1f} dB\n")
-                        
-                        if "tempo" in analysis.get("temporal_features", {}):
-                            f.write(f"- **Tempo**: {analysis['temporal_features']['tempo']:.1f} BPM\n")
-                        
-                        f.write(f"- **Analysis File**: `{file_path.stem}_analysis.json`\n")
-                        f.write(f"- **Feedback File**: `{file_path.stem}_feedback.md`\n\n")
+                    f.write(f"\nFile: {file_name}\n")
+                    f.write(f"  Quality: {summary.get('overall_quality', 'Unknown')}\n")
+                    f.write(f"  Genre: {summary.get('detected_genre', 'unknown').title()}")
+                    f.write(f" ({summary.get('genre_confidence', 0):.1%} confidence)\n")
+                    
+                    if summary.get('primary_issues'):
+                        f.write(f"  Issues: {', '.join(summary['primary_issues'])}\n")
+                    
+                    processing_info = result['result'].get('processing_info', {})
+                    if processing_info:
+                        f.write(f"  Processing Time: {processing_info.get('processing_time', 0):.1f}s\n")
+                        f.write(f"  File Size: {processing_info.get('file_size_mb', 0):.1f} MB\n")
             
-            # Errors
-            if summary["errors"]:
-                f.write("## Errors\n\n")
-                for error in summary["errors"]:
-                    file_path = Path(error["file_path"])
-                    f.write(f"- **{file_path.name}**: {error['error']}\n")
-                f.write("\n")
+            # Failed files
+            failed_results = [r for r in results if r['status'] == 'error']
+            if failed_results:
+                f.write(f"\nFAILED FILES ({len(failed_results)}):\n")
+                f.write("-" * 40 + "\n")
+                
+                for result in failed_results:
+                    file_name = Path(result['file_path']).name
+                    f.write(f"File: {file_name}\n")
+                    f.write(f"  Error: {result['error']}\n")
             
-            # Statistics
-            if summary["successful_results"]:
-                f.write("## Statistics\n\n")
-                
-                # Calculate aggregate statistics
-                durations = []
-                rms_levels = []
-                peak_levels = []
-                dynamic_ranges = []
-                tempos = []
-                
-                for result in summary["successful_results"]:
-                    if "result" in result and "analysis" in result["result"]:
-                        analysis = result["result"]["analysis"]
-                        durations.append(analysis["file_info"]["duration_seconds"])
-                        rms_levels.append(analysis["dynamics"]["rms_db"])
-                        peak_levels.append(analysis["dynamics"]["peak_db"])
-                        dynamic_ranges.append(analysis["dynamics"]["dynamic_range_db"])
-                        
-                        if "tempo" in analysis.get("temporal_features", {}):
-                            tempo = analysis["temporal_features"]["tempo"]
-                            if tempo > 0:  # Valid tempo detected
-                                tempos.append(tempo)
-                
-                import statistics
-                
-                f.write(f"- **Average Duration**: {statistics.mean(durations):.1f}s\n")
-                f.write(f"- **Average RMS Level**: {statistics.mean(rms_levels):.1f} dB\n")
-                f.write(f"- **Average Peak Level**: {statistics.mean(peak_levels):.1f} dB\n")
-                f.write(f"- **Average Dynamic Range**: {statistics.mean(dynamic_ranges):.1f} dB\n")
-                
-                if tempos:
-                    f.write(f"- **Average Tempo**: {statistics.mean(tempos):.1f} BPM\n")
-                
-                # Loudness distribution
-                f.write("\n### Loudness Distribution\n\n")
-                loud_count = sum(1 for rms in rms_levels if rms > -14)
-                medium_count = sum(1 for rms in rms_levels if -20 <= rms <= -14)
-                quiet_count = sum(1 for rms in rms_levels if rms < -20)
-                
-                f.write(f"- **Loud (> -14 dB RMS)**: {loud_count} files\n")
-                f.write(f"- **Medium (-20 to -14 dB RMS)**: {medium_count} files\n")
-                f.write(f"- **Quiet (< -20 dB RMS)**: {quiet_count} files\n")
+            f.write(f"\nReport generated on: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Batch Audio Analysis Tool')
-    parser.add_argument('input_dir', help='Input directory containing audio files')
-    parser.add_argument('-o', '--output', required=True, help='Output directory for results')
-    parser.add_argument('-r', '--recursive', action='store_true', help='Search subdirectories recursively')
-    parser.add_argument('-v', '--visualize', action='store_true', help='Create visualization charts')
-    parser.add_argument('-p', '--parallel', action='store_true', help='Process files in parallel (memory intensive)')
-    parser.add_argument('-w', '--workers', type=int, default=2, help='Number of parallel workers (default: 2)')
-    parser.add_argument('-m', '--model', default='gemma3:27b', help='LLM model name (default: gemma3:27b)')
+    """Command-line interface for batch processing"""
+    
+    parser = argparse.ArgumentParser(
+        description="Batch Audio Analysis Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s input_folder output_folder                # Process all files
+  %(prog)s input_folder output_folder --parallel     # Parallel processing
+  %(prog)s input_folder output_folder --no-llm       # Skip AI feedback
+  %(prog)s input_folder output_folder --genre rock   # Force rock genre
+  %(prog)s input_folder output_folder --workers 4    # Use 4 parallel workers
+        """
+    )
+    
+    parser.add_argument('input_dir', help='Directory containing audio files')
+    parser.add_argument('output_dir', help='Directory to save analysis results')
+    parser.add_argument('--recursive', '-r', action='store_true', default=True,
+                       help='Search subdirectories (default: True)')
+    parser.add_argument('--parallel', '-p', action='store_true',
+                       help='Process files in parallel')
+    parser.add_argument('--workers', '-w', type=int, default=2,
+                       help='Number of parallel workers (default: 2)')
+    parser.add_argument('--model', '-m', default="gemma3:27b",
+                       help='LLM model to use (default: gemma3:27b)')
+    parser.add_argument('--genre', choices=['rock', 'jazz', 'classical', 'electronic', 
+                                           'hip_hop', 'folk', 'pop'],
+                       help='Force specific genre for all files')
+    parser.add_argument('--no-llm', action='store_true',
+                       help='Disable AI feedback generation')
+    parser.add_argument('--no-visuals', action='store_true',
+                       help='Disable visualization generation')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Enable verbose output')
     
     args = parser.parse_args()
     
-    # Validate input directory
-    if not Path(args.input_dir).exists():
+    # Validate directories
+    if not os.path.exists(args.input_dir):
         print(f"Error: Input directory not found: {args.input_dir}")
-        return 1
+        sys.exit(1)
     
-    # Warning for parallel processing
-    if args.parallel:
-        print("WARNING: Parallel processing is memory intensive!")
-        print(f"Using {args.workers} workers with model {args.model}")
-        if args.model == "gemma2:27b":
-            print("Consider using a smaller model (e.g., gemma2:9b) for parallel processing")
-        
-        response = input("Continue? (y/N): ")
-        if response.lower() != 'y':
-            print("Cancelled.")
-            return 0
-    
-    # Initialize processor
-    processor = BatchAudioProcessor(
-        model_name=args.model,
-        max_workers=args.workers
-    )
+    print("Batch Audio Analysis Tool")
+    print("="*50)
     
     try:
-        # Process batch
-        summary = processor.process_batch(
-            input_dir=args.input_dir,
-            output_dir=args.output,
-            recursive=args.recursive,
-            create_visualizations=args.visualize,
-            parallel=args.parallel
+        # Initialize processor
+        processor = BatchAudioProcessor(
+            model_name=args.model,
+            max_workers=args.workers,
+            enable_llm=not args.no_llm,
+            enable_visualizations=not args.no_visuals
         )
         
-        # Print final summary
-        print(f"\n{'='*50}")
-        print("BATCH PROCESSING COMPLETE")
-        print(f"{'='*50}")
-        print(f"Total files processed: {summary['batch_info']['successfully_processed']}")
-        print(f"Errors: {summary['batch_info']['errors']}")
-        print(f"Total time: {summary['batch_info']['total_processing_time']:.1f}s")
-        print(f"Results saved to: {args.output}")
+        # Process batch
+        result = processor.process_batch(
+            input_dir=args.input_dir,
+            output_dir=args.output_dir,
+            recursive=args.recursive,
+            parallel=args.parallel,
+            genre=args.genre
+        )
         
-        return 0
+        # Summary
+        summary = result['batch_summary']
+        success_rate = summary['processed'] / summary['total_files'] * 100 if summary['total_files'] > 0 else 0
         
+        print(f"\nBatch processing completed with {success_rate:.1f}% success rate")
+        
+    except KeyboardInterrupt:
+        print("\nBatch processing interrupted by user.")
+        sys.exit(1)
     except Exception as e:
         print(f"Error during batch processing: {e}")
-        return 1
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
