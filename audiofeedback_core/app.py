@@ -248,6 +248,13 @@ class AudioFeedbackApp:
                     )
                     results['visualizations'] = vis_files
                     
+                    # Also save JSON results in the same directory
+                    results_file = os.path.join(output_dir, "analysis_results.json")
+                    with open(results_file, 'w') as f:
+                        import json
+                        json.dump(self._serialize_result(results), f, indent=2, default=str)
+                    results['visualizations']['analysis_json'] = results_file
+                    
                     # Also save text summary
                     summary_file = os.path.join(output_dir, f"{Path(file_path).stem}_summary.txt")
                     self.visualizer.save_analysis_summary(analysis_data, summary_file)
@@ -675,14 +682,8 @@ Examples:
                 output_dir=output_dir
             )
             
-            # Save results as JSON
+            # Results are automatically saved in the visualization directory
             output_path = output_dir or app._get_default_output_dir(file_path)
-            os.makedirs(output_path, exist_ok=True)
-            
-            results_file = os.path.join(output_path, "analysis_results.json")
-            with open(results_file, 'w') as f:
-                json.dump(app._serialize_result(result), f, indent=2, default=str)
-            
             print(f"\nAnalysis complete. Results saved to: {output_path}")
     
     except KeyboardInterrupt:

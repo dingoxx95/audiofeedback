@@ -198,8 +198,8 @@ TEMPORAL CHARACTERISTICS:
 - Onset Rate: {temporal.get('onset_rate', 0):.2f} onsets/second
 - Onset Strength: {temporal.get('onset_strength_mean', 0):.4f}
 
-STEREO IMAGING (if applicable):
-{json.dumps(stereo, indent=2) if stereo else 'Mono signal - no stereo analysis'}
+STEREO IMAGING:
+{json.dumps(stereo, indent=2) if stereo else f"Audio is {file_info.get('channels', 1)}-channel {'stereo' if file_info.get('is_stereo', False) else 'mono'}"}
 
 HARMONIC CONTENT:
 - Harmonic Ratio: {harmonic.get('harmonic_ratio', 0):.3f}

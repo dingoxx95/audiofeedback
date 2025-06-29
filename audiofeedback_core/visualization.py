@@ -109,7 +109,7 @@ class AudioVisualizer:
             'figure.dpi': self.dpi,
             'savefig.dpi': self.dpi,
             'savefig.bbox': 'tight',
-            'savefig.pad_inches': 0.1,
+            'savefig.pad_inches': 0.05,  # Reduced padding
             'font.size': 10,
             'axes.titlesize': 12,
             'axes.labelsize': 10,
@@ -1105,7 +1105,7 @@ STATUS: {'✓ Confident' if confidence > 0.5 else '? Uncertain' if confidence > 
         dynamics = analysis_data.get('dynamics', {})
         spectrum = analysis_data.get('frequency_spectrum', {})
         genre_data = analysis_data.get('genre_detection', {})
-        stereo_props = analysis_data.get('stereo_properties', {})
+        stereo_props = analysis_data.get('stereo_analysis', {})
         
         summary = f"""AUDIO ANALYSIS SUMMARY
 {'='*50}
